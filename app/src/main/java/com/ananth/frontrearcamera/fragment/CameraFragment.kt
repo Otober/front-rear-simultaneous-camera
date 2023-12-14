@@ -324,7 +324,7 @@ class CameraFragment : Fragment() {
 
         // 요청 구성
         val request: Request = Request.Builder()
-            .url("http://192.168.161.24:3000/upload")
+            .url("http://192.168.129.24:3000/upload")
             .post(requestBody)
             .build()
 
