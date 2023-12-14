@@ -5,6 +5,7 @@ package com.ananth.frontrearcamera.activity
  */
 import androidx.appcompat.app.AppCompatActivity
 import android.os.Bundle
+import android.view.WindowManager
 import com.ananth.frontrearcamera.R
 import com.ananth.frontrearcamera.fragment.CameraFragment
 
@@ -14,11 +15,14 @@ import com.ananth.frontrearcamera.fragment.CameraFragment
  * TODO 3 Add one of this view to the layout file
  * TODO 4 Show Rear camera preview in this view
  */
-class MainActivity : AppCompatActivity() {
-
+class MainActivity : AppCompatActivity(){
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
+
+        // Keep the screen on
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+
         savedInstanceState ?: supportFragmentManager.beginTransaction()
             .replace(R.id.container, CameraFragment.newInstance())
             .commit()

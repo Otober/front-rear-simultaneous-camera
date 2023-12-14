@@ -5,33 +5,47 @@ import android.content.Context
 import android.content.pm.PackageManager
 import android.graphics.*
 import android.hardware.camera2.*
+import android.icu.text.SimpleDateFormat
+import android.location.Location
+import android.media.Image
 import android.media.ImageReader
 import android.os.Build
 import android.os.Bundle
+import android.os.Environment
 import android.os.Handler
 import android.os.HandlerThread
 import android.util.Log
 import android.util.Size
 import android.util.SparseIntArray
 import android.view.*
-import androidx.fragment.app.Fragment
+import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
-
+import androidx.fragment.app.Fragment
 import com.ananth.frontrearcamera.R
 import com.ananth.frontrearcamera.util.CompareSizesByViewAspectRatio
-import com.ananth.frontrearcamera.util.REQUEST_CAMERA_PERMISSION
 import com.ananth.frontrearcamera.view.AutoFitTextureView
-import com.ananth.frontrearcamera.view.ConfirmationDialog
 import com.ananth.frontrearcamera.view.ErrorDialog
+import com.google.android.gms.location.FusedLocationProviderClient
+import com.google.android.gms.location.LocationRequest
+import com.google.android.gms.location.LocationServices
+import okhttp3.*
+import okhttp3.RequestBody.Companion.asRequestBody
+import java.io.File
+import java.io.FileOutputStream
+import java.io.FileWriter
+import java.io.IOException
 import java.util.*
 import java.util.concurrent.Semaphore
 import java.util.concurrent.TimeUnit
-
+import java.util.zip.ZipEntry
+import java.io.BufferedOutputStream
+import java.util.zip.ZipOutputStream
+import java.io.FileInputStream
 /**
  * A simple [Fragment] subclass.
  */
-class CameraFragment : Fragment() {
 
+class CameraFragment : Fragment() {
     /**
      * An additional thread for running tasks that shouldn't block the UI.
      */
@@ -51,7 +65,6 @@ class CameraFragment : Fragment() {
      * A [Handler] for running tasks in the background.
      */
     private var backgroundHandlerRear: Handler? = null
-
 
     /**
      * An [ImageReader] that handles still image capture.
@@ -82,7 +95,7 @@ class CameraFragment : Fragment() {
      * A [CameraCaptureSession] for camera preview.
      */
     private var captureSessionRear: CameraCaptureSession? = null
-    
+
     /**
      * A reference to the opened [CameraDevice].
      */
@@ -92,7 +105,7 @@ class CameraFragment : Fragment() {
      * A reference to the opened [CameraDevice].
      */
     private var cameraDeviceRear: CameraDevice? = null
-    
+
     /**
      * The [android.util.Size] of camera preview.
      */
@@ -157,14 +170,332 @@ class CameraFragment : Fragment() {
      */
     private lateinit var previewRequestRear: CaptureRequest
 
+    private var imageFront : Image? = null
+
+    private var imageRear : Image? = null
+
+    private var bitmapFront : Bitmap? = null
+
+    private var bitmapRear: Bitmap? = null
+
+    private var key1 : Bitmap? = null
+
+    private var key2 : Bitmap? = null
+
+    private var original_key : Bitmap? = null
+
+    private val Frame = 1000
+
+    private var index = 0
+
+    private var start_time = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Date())
+
+    private val MULTIPLE_PERMISSIONS_REQUEST_CODE = 1
+
+    private lateinit var fusedLocationClient: FusedLocationProviderClient
+    private val locationRequest: LocationRequest = LocationRequest.create().apply {
+        interval = 10000 // 위치 정보 업데이트 간격
+        fastestInterval = 5000 // 가장 빠른 위치 정보 업데이트 간격
+        priority = LocationRequest.PRIORITY_HIGH_ACCURACY // 높은 정확도
+    }
+
+    private fun createLocationFile(): File? {
+
+        val locationFile = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "Test/location_updates.txt")
+        if (!locationFile.exists()) {
+            try {
+                locationFile.createNewFile()
+            } catch (e: IOException) {
+                e.printStackTrace()
+                return null
+            }
+        }
+        return locationFile
+    }
+
+    private fun writeLocationToFile(location: Location) {
+        val locationFile = createLocationFile() ?: return
+
+        // 현재 시간을 "yyyy-MM-dd HH:mm:ss" 포맷으로 변환
+        val currentTime = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Date())
+
+        try {
+            FileWriter(locationFile, true).use { writer ->
+                val locationString =
+                    "Start Time: $start_time \n" +
+                            "End Time: $currentTime\n" +
+                            "Latitude: ${location.latitude} \n" +
+                            "Longitude: ${location.longitude}\n"
+                writer.write(locationString) // 파일 끝에 현재 위치와 시간을 추가합니다.
+                start_time = currentTime
+            }
+        } catch (e: IOException) {
+            e.printStackTrace()
+        }
+    }
+    fun getCurrentLocation() {
+        Log.e(TAG, "getCurrentLocation")
+        // 위치 권한 확인
+        if (ActivityCompat.checkSelfPermission(
+                requireContext(),
+                Manifest.permission.ACCESS_FINE_LOCATION
+            ) != PackageManager.PERMISSION_GRANTED && ActivityCompat.checkSelfPermission(
+                requireContext(),
+                Manifest.permission.ACCESS_COARSE_LOCATION
+            ) != PackageManager.PERMISSION_GRANTED
+        ) {
+            // TODO: Consider calling
+            // ActivityCompat#requestPermissions
+            // 여기에서 누락된 권한을 요청하고, 사용자가 권한을 부여하는 경우를 처리하도록
+            // onRequestPermissionsResult를 재정의하십시오.
+            return
+        }
+        // 현재 위치를 가져오고 파일에 쓰기
+        fusedLocationClient.getCurrentLocation(LocationRequest.PRIORITY_HIGH_ACCURACY, null)
+            .addOnSuccessListener { location: Location? ->
+                // 위치 정보가 있을 때만 작업을 수행합니다.
+                if (location != null) {
+                    // 위치 정보를 파일에 기록합니다.
+                    writeLocationToFile(location)
+
+                    // 파일 쓰기 작업이 완료된 것으로 가정하고 업로드를 진행합니다.
+                    // 업로드는 메인 스레드에서 호출되지 않도록 해야 합니다.
+                    createLocationFile()?.let { uploadFile(it) }
+                }
+            }
+
+        return
+    }
+
+    fun createRandomBitmap(width: Int, height: Int): Bitmap {
+        val random = Random()
+        val randomBitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+
+        for (x in 0 until width) {
+            for (y in 0 until height) {
+                val red = random.nextInt(256)
+                val green = random.nextInt(256)
+                val blue = random.nextInt(256)
+
+                randomBitmap.setPixel(x, y, Color.rgb(red, green, blue))
+            }
+        }
+        val pixel = randomBitmap.getPixel(0, 0)
+        val red = Color.red(pixel)
+        val blue = Color.blue(pixel)
+        val green = Color.green(pixel)
+        Log.d(TAG, "random color : ${red}, ${blue}, ${green}")
+        Log.d(TAG,"generate resultBitmap")
+        return randomBitmap
+    }
+
+
+    fun xorBitmaps(bitmap1: Bitmap, bitmap2: Bitmap): Bitmap? {
+        if (bitmap1.width != bitmap2.width || bitmap1.height != bitmap2.height) {
+            return null // 또는 다른 방식으로 크기 불일치를 처리
+        }
+
+        val resultBitmap = Bitmap.createBitmap(bitmap1.width, bitmap1.height, bitmap1.config)
+
+        for (x in 0 until bitmap1.width) {
+            for (y in 0 until bitmap1.height) {
+                val pixel1 = bitmap1.getPixel(x, y)
+                val pixel2 = bitmap2.getPixel(x, y)
+                val red = Color.red(pixel1) xor Color.red(pixel2)
+                val green = Color.green(pixel1) xor Color.green(pixel2)
+                val blue = Color.blue(pixel1) xor Color.blue(pixel2)
+
+                resultBitmap.setPixel(x, y, Color.rgb(red, green, blue))
+            }
+        }
+        Log.d(TAG, "XOR SUCCESS")
+        return resultBitmap
+    }
+
+    fun uploadFile(file: File) {
+        Log.d(TAG, "Try connect and upload file")
+        val client = OkHttpClient()
+
+        // 파일 타입을 구분하지 않고 'file' 키를 사용합니다.
+        val requestBody: RequestBody = MultipartBody.Builder()
+            .setType(MultipartBody.FORM)
+            .addFormDataPart("file", file.name, file.asRequestBody())
+            .build()
+
+        // 요청 구성
+        val request: Request = Request.Builder()
+            .url("http://192.168.161.24:3000/upload")
+            .post(requestBody)
+            .build()
+
+        // 별도의 스레드에서 실행
+        Thread {
+            try {
+                client.newCall(request).execute().use { response ->
+                    if (!response.isSuccessful) throw IOException("Unexpected code $response")
+                    Log.d(TAG, "File uploaded successfully")
+                    println(response.body!!.string())
+                    /*
+                    if (file.exists()) {
+                        val deleted = file.delete()
+                        if (deleted) {
+                            Log.d(TAG, "File ${file.name} deleted successfully")
+                        } else {
+                            Log.e(TAG, "Failed to delete file ${file.name}")
+                        }
+                    }*/
+                }
+            } catch (e: IOException) {
+                // 연결 실패 또는 다른 네트워크 문제로 인한 예외 처리
+                e.printStackTrace()
+                Log.d(TAG, "Connect error")
+                // 필요한 경우 여기에서 사용자에게 오류 상황을 알릴 수 있습니다.
+            }
+        }.start()
+    }
+
+    fun ImageToBitmap(image: Image): Bitmap? {
+        val buffer = image.planes[0].buffer
+        val bytes = ByteArray(buffer.remaining())
+        buffer.get(bytes)
+
+        return BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+    }
+
+    fun saveBitmapToFile(bitmap: Bitmap, filename: String): File {
+        val out: FileOutputStream
+        val dir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "Test")
+        if (!dir.exists()) {
+            dir.mkdirs()
+        }
+        val file = File(dir, filename)
+        out = FileOutputStream(file)
+        bitmap.compress(Bitmap.CompressFormat.PNG, 100, out) // JPEG 대신 PNG 포맷을 사용합니다.
+        out.flush()
+        out.close()
+        return file
+    }
+
+
+    fun compressAndDeleteFilesByRange(tempDir: File, basePattern: String, startRange: Int, endRange: Int, zipFileName: String) {
+        Thread{
+            val zipFile = File(tempDir, zipFileName)
+            val buffer = ByteArray(1024)
+            ZipOutputStream(BufferedOutputStream(FileOutputStream(zipFile))).use { zos ->
+                tempDir.listFiles { _, name ->
+                    name.matches("$basePattern\\d{3}.png".toRegex()) &&
+                            name.substringAfterLast("$basePattern").substringBefore(".png").toIntOrNull()?.let {
+                                it in startRange..endRange
+                            } ?: false
+                }?.forEach { file ->
+                    FileInputStream(file).use { fis ->
+                        zos.putNextEntry(ZipEntry(file.name))
+                        var length: Int
+                        while (fis.read(buffer).also { length = it } > 0) {
+                            zos.write(buffer, 0, length)
+                        }
+                        zos.closeEntry()
+
+                        // 압축 후 파일 삭제
+                        //file.delete()
+                    }
+                }
+            }
+            uploadFile(zipFile)
+        }.start()
+    }
+
+    private fun test_imagetovideo() {
+
+        if(index % Frame == 0) {
+            Log.d(TAG, "bitmapBuffer  > $Frame")
+            val dir: File = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "Test")
+            val tempDir = File(dir, "temp_images")
+            if(index == Frame) {
+                Log.d(TAG, "test_imagetovideo < 100")
+                compressAndDeleteFilesByRange(tempDir, "1_frame_", 0, Frame - 1, "imageBuffer1.zip")
+                compressAndDeleteFilesByRange(tempDir, "2_frame_", 0, Frame  - 1, "imageBuffer2.zip")
+                index = 0
+            }
+            else {
+                Log.d(TAG, "test_imagetovideo < 200")
+                compressAndDeleteFilesByRange(tempDir, "1_frame_", Frame, 2 * Frame - 1, "imageBuffer1.zip")
+                compressAndDeleteFilesByRange(tempDir, "2_frame_", Frame, 2 * Frame - 1, "imageBuffer2.zip")
+                index = 0
+            }
+
+            val keyFile = original_key?.let { saveBitmapToFile(it, "key.png") }
+            if (keyFile != null) {
+                uploadFile(keyFile)
+            }
+            Log.e(TAG, "Try to make Location File")
+            val location = getCurrentLocation()
+        }
+    }
 
     /**
      * This a callback object for the [ImageReader]. "onImageAvailable" will be called when a
      * still image is ready to be saved.
      */
-    private val onImageAvailableListenerFront = ImageReader.OnImageAvailableListener {
-//        backgroundHandler?.post(ImageSaver(it.acquireNextImage(), file))
-        Log.d(TAG, "onImageAvailableListenerFront Called")
+    private val onImageAvailableListenerFront = ImageReader.OnImageAvailableListener { reader ->
+        imageFront = reader.acquireLatestImage()
+
+        imageFront?.let {
+            bitmapFront = ImageToBitmap(it)
+            it.close()
+
+            bitmapRear?.let { rearBitmap ->
+                var temp1 = bitmapFront!!.copy(bitmapFront!!.config, true)
+                var temp2 = bitmapRear!!.copy(bitmapRear!!.config, true)
+
+
+                Log.d(TAG, "in copy")
+                if(index == 0) {
+                    Log.d(TAG, "create Random key connect")
+                    original_key = createRandomBitmap(temp1!!.width, temp1!!.height)
+                    key1 = original_key!!.copy(original_key!!.config, true)
+                    key2 = original_key!!.copy(original_key!!.config, true)
+                }
+
+                Log.d(TAG, "xor")
+
+                var temp = xorBitmaps(temp1!!, key2!!)
+                temp1 = temp!!.copy(temp!!.config, true)
+                temp.recycle()
+
+                Log.d(TAG, "xor temp2")
+                temp = xorBitmaps(temp2!!, key1!!)
+                temp2 = temp!!.copy(temp!!.config, true)
+                temp.recycle()
+
+
+
+                Log.d(TAG, "copy buffered")
+                val maindir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "Test")
+                val tempDir = File(maindir, "temp_images")
+                if (!tempDir.exists()) {
+                    tempDir.mkdirs()
+                }
+                val fileName = String.format("frame_%03d.png", index)
+                saveBitmapToFile(temp1, "/temp_images/1_$fileName")
+                saveBitmapToFile(temp2, "/temp_images/2_$fileName")
+                index += 1
+
+                if(index % 100 == 0) {
+                    Log.d(TAG, "index : ${index}")
+                }
+
+                Log.d(TAG, "copy temp to key")
+                key1 = temp1!!.copy(temp1!!.config, true)
+                key2 = temp2!!.copy(temp2!!.config, true)
+
+                Log.d(TAG, "checked upload")
+                test_imagetovideo()
+                bitmapFront = null
+                bitmapRear = null
+            }
+            Log.d(TAG, "onImageAvailableListenerFront Called")
+        } ?: Log.e(TAG, "No image available from front reader!")
     }
 
 
@@ -172,10 +503,15 @@ class CameraFragment : Fragment() {
      * This a callback object for the [ImageReader]. "onImageAvailable" will be called when a
      * still image is ready to be saved.
      */
-    private val onImageAvailableListenerRear = ImageReader.OnImageAvailableListener {
-        //        backgroundHandler?.post(ImageSaver(it.acquireNextImage(), file))
-        Log.d(TAG, "onImageAvailableListener Called")
+    private val onImageAvailableListenerRear = ImageReader.OnImageAvailableListener { reader ->
+        imageRear = reader.acquireLatestImage()
+        imageRear?.let {
+            bitmapRear = ImageToBitmap(it)
+            it.close()
+            Log.d(TAG, "onImageAvailableListenerRear Called")
+        } ?: Log.e(TAG, "No image available from rear reader!")
     }
+
 
 
     /**
@@ -324,6 +660,7 @@ class CameraFragment : Fragment() {
         } else {
             textureViewRear.surfaceTextureListener = surfaceTextureListenerRear
         }
+        fusedLocationClient = LocationServices.getFusedLocationProviderClient(requireActivity())
     }
 
     override fun onPause() {
@@ -333,13 +670,15 @@ class CameraFragment : Fragment() {
         super.onPause()
     }
 
+
     /**
      * Opens front camera specified by [Camera2BasicFragment.cameraId].
      */
     private fun openCameraFront(width: Int, height: Int) {
+        Log.d(TAG, "openCameraFront")
         val permission = activity?.let { ContextCompat.checkSelfPermission(it, Manifest.permission.CAMERA) }
         if (permission != PackageManager.PERMISSION_GRANTED) {
-            requestCameraPermission()
+            requestMultiplePermissions()
             return
         }
         setUpCameraOutputsFront(width, height)
@@ -356,8 +695,9 @@ class CameraFragment : Fragment() {
         } catch (e: InterruptedException) {
             throw RuntimeException("Interrupted while trying to lock camera opening.", e)
         }
-
     }
+
+
 
     /**
      * Opens rear camera specified by [Camera2BasicFragment.cameraId].
@@ -365,7 +705,7 @@ class CameraFragment : Fragment() {
     private fun openCameraRear(width: Int, height: Int) {
         val permission = activity?.let { ContextCompat.checkSelfPermission(it, Manifest.permission.CAMERA) }
         if (permission != PackageManager.PERMISSION_GRANTED) {
-            requestCameraPermission()
+            requestMultiplePermissions()
             return
         }
         setUpCameraOutputsRear(width, height)
@@ -386,11 +726,26 @@ class CameraFragment : Fragment() {
     }
 
 
-    private fun requestCameraPermission() {
-        if (shouldShowRequestPermissionRationale(Manifest.permission.CAMERA)) {
-            ConfirmationDialog().show(childFragmentManager, FRAGMENT_DIALOG)
+    private fun requestMultiplePermissions() {
+        val requiredPermissions = arrayOf(
+            Manifest.permission.WRITE_EXTERNAL_STORAGE,
+            Manifest.permission.READ_EXTERNAL_STORAGE,
+            Manifest.permission.ACCESS_FINE_LOCATION,
+            Manifest.permission.CAMERA
+        )
+
+        val permissionsToRequest = mutableListOf<String>()
+        requiredPermissions.forEach { permission ->
+            if (ContextCompat.checkSelfPermission(requireActivity(), permission) != PackageManager.PERMISSION_GRANTED) {
+                permissionsToRequest.add(permission)
+            }
+        }
+
+        if (permissionsToRequest.isNotEmpty()) {
+            // 필요한 권한들에 대해서 요청을 수행합니다.
+            requestPermissions(permissionsToRequest.toTypedArray(), MULTIPLE_PERMISSIONS_REQUEST_CODE)
         } else {
-            requestPermissions(arrayOf(Manifest.permission.CAMERA), REQUEST_CAMERA_PERMISSION)
+            // 모든 필요한 권한이 이미 부여되었습니다. 다음 단계를 진행하세요.
         }
     }
 
@@ -420,10 +775,10 @@ class CameraFragment : Fragment() {
                 val aspectRatio = Collections.max(
                     Arrays.asList(*map.getOutputSizes(ImageFormat.JPEG)),
                     CompareSizesByViewAspectRatio(textureViewFront.height, textureViewFront.width))
-                imageReaderFront = ImageReader.newInstance(aspectRatio.width, aspectRatio.height,
-                    ImageFormat.JPEG, /*maxImages*/ 2).apply {
+                imageReaderFront = ImageReader.newInstance(aspectRatio.width, aspectRatio.height, ImageFormat.JPEG, 2).apply {
                     setOnImageAvailableListener(onImageAvailableListenerFront, backgroundHandlerFront)
                 }
+
 
                 Log.d(TAG, "selected aspect ratio " + aspectRatio.height  + "x" + aspectRatio.width + " : " + aspectRatio.height/aspectRatio.width)
                 // Find out if we need to swap dimension to get the preview size relative to sensor
@@ -499,6 +854,9 @@ class CameraFragment : Fragment() {
             cameraDeviceFront = null
             imageReaderFront?.close()
             imageReaderFront = null
+
+
+
         } catch (e: InterruptedException) {
             throw RuntimeException("Interrupted while trying to lock front camera closing.", e)
         } finally {
@@ -745,6 +1103,7 @@ class CameraFragment : Fragment() {
     private fun startBackgroundThread() {
         backgroundThreadFront = HandlerThread("CameraBackgroundFront").also { it.start() }
         backgroundThreadRear = HandlerThread("CameraBackgroundRear").also { it.start() }
+
         backgroundHandlerFront = Handler(backgroundThreadFront?.looper)
         backgroundHandlerRear = Handler(backgroundThreadRear?.looper)
     }
@@ -755,6 +1114,8 @@ class CameraFragment : Fragment() {
     private fun stopBackgroundThread() {
         backgroundThreadFront?.quitSafely()
         backgroundThreadRear?.quitSafely()
+
+
         try {
             backgroundThreadFront?.join()
             backgroundThreadFront = null
@@ -763,6 +1124,8 @@ class CameraFragment : Fragment() {
             backgroundThreadRear?.join()
             backgroundThreadRear = null
             backgroundHandlerRear = null
+
+
         } catch (e: InterruptedException) {
             Log.e(TAG, e.toString())
         }
@@ -787,6 +1150,7 @@ class CameraFragment : Fragment() {
                 CameraDevice.TEMPLATE_PREVIEW
             )
             previewRequestBuilderFront.addTarget(surface)
+            previewRequestBuilderFront.addTarget(imageReaderFront!!.surface)
 
             // Here, we create a CameraCaptureSession for camera preview.
             cameraDeviceFront?.createCaptureSession(Arrays.asList(surface, imageReaderFront?.surface),
@@ -841,6 +1205,7 @@ class CameraFragment : Fragment() {
                 CameraDevice.TEMPLATE_PREVIEW
             )
             previewRequestBuilderRear.addTarget(surface)
+            previewRequestBuilderRear.addTarget(imageReaderRear!!.surface)
 
             // Here, we create a CameraCaptureSession for camera preview.
             cameraDeviceRear?.createCaptureSession(Arrays.asList(surface, imageReaderRear?.surface),
